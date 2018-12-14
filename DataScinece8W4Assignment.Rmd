@@ -1,0 +1,185 @@
+---
+title: Data Science Course 8, Week 4
+author: Dimitri Stucki
+output: html_document
+---
+
+# 0) Preamble
+
+Load the necessary packages
+
+```{r}
+library(caret)
+library(knitr)
+```
+
+# 1) Introduction
+
+The aim of this project is to predict whether 6 participants did a training exercise correctly or not. This is coded in the "classe" variable in the training set. Any of the other variables may be used to predict the outcome. Furthermore, the established model will be used to predict 20 different test cases.  
+
+Following is a report describing how the model was built, how cross validation was used to asses the error, what the expected out of sample error is, and why the choices were made.
+
+# 2) Training
+
+The approach to this analysis will be to try and maximize speed. The computation times on an old laptop are too long. A lot of variables will be removed, possibly at the expense of accuracy.
+
+## 2.1) Reading and cleaning
+
+The data was downloaded from the Coursera website, originally provided by http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.  
+
+Links to the data:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv  
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv  
+
+```{r}
+## Read the training data
+training <- read.csv("pml-training.csv")
+## What do we have?
+names(training)
+```
+
+Wow, this is a lot of variables.  
+Let's do some data exploration first.  
+
+Start with the response *classe* (i.e. the way in which the exercises were performed).
+
+```{r}
+## How are the observations distributed?
+table(training$classe,useNA="always")
+```
+
+*-> No missing values and a more or less balanced distribution.*  
+
+Maybe there are some variables with an excessive amount of NAs. I could get rid of these.  
+
+```{r}
+## What proportions of NAs are there?
+table(apply(training,2,FUN=function(x){sum(is.na(x))/length(x)}))
+```
+
+*-> Indeed, it's either no NAs or almost all NAs. Interesting.*  
+
+Well, let's lose the 67 NA variables.  
+
+```{r}
+## Remove
+training.noNA <- training[,(apply(training,2,
+                                  FUN=function(x){sum(is.na(x))/length(x)})==0)]
+## How many variables left?
+ncol(training.noNA)
+```
+
+*-> 93 variables left.*  
+
+Some variables are coded as factors and have a lot of missing entries as well. Removing them could clearly speed up the process. I may include them if the cross validation results in a very low accuracy.  
+
+Remove all the ones that are coded as factors, except for user name and classe.  
+
+```{r}
+## Remove
+training.noNA.noFac <- training.noNA[,!names(training.noNA) %in%
+                                      names(Filter(is.factor,training.noNA))
+                                     [-c(1,37)]]
+## How many left?
+ncol(training.noNA.noFac)
+```
+
+*-> 53 variables left.*  
+
+I could also exclude variables that strongly correlate, as they would anyway predict the same thing, and may even introduce a bias (collinearity).  
+
+Check the correlations for the numeric variables and remove those with a high correlation.  
+
+```{r}
+## Create correlation matrix
+CorMat <- cor(apply(training.noNA.noFac,2,FUN=as.numeric))
+## Are there any correlations larger than 0.8 (or smaller -0.8)
+any(abs(CorMat)>0.8)
+## Convert the matrix to easily identify the correlating variables
+CorDf <- as.data.frame(as.table(CorMat))
+CorVar <- CorDf[which(abs(CorDf$Freq)>0.8 & CorDf$Var1!=CorDf$Var2),]
+## Remove
+training.noNA.noFac.noCor <- training.noNA.noFac[, !(names(training.noNA.noFac)
+    %in% CorVar$Var2)]
+## What's left?
+names(training.noNA.noFac.noCor)
+```
+
+*-> Maybe a harsh decision, but removing everything with a correlation larger than 0.8 seems acceptable to gain some computational speed.*  
+
+Also remove X. This is just the row number repeated.  
+
+```{r}
+## Remove
+training.noNA.noFac.noCor <- training.noNA.noFac.noCor[,-1]
+## How many are left?
+ncol(training.noNA.noFac.noCor)
+```
+
+*-> Down to 35 variables.*  
+
+Seems okay now. Let's go to model building.  
+
+## 2.3) Build/Train the model
+
+I started out with random forest to maximize speed. But this had a very low accuracy (~0.5). So I arbitrarily switched to gbm (I remembered this from the exercises).  
+
+```{r eval=FALSE}
+## Set the seed for repeatability
+set.seed(687)
+
+## Fit a general boosting machine model
+modFit.GBM <-
+    train(classe~.,method="gbm",
+          data=training.noNA.noFac.noCor)
+
+## Predict classe and calculate the confusion matrix to assess accuracy
+predicts <- predict(modFit.GBM.CV,training.noNA.noFac.noCor)
+confusionMatrix(predicts,training.noNA.noFac.noCor$classe)
+
+## Show the final model
+modFit.GBM$finalModel
+```
+
+Due to the very long computation time of gbm only the cross validated results are shown (below).  
+
+## 2.4) Cross validate the model
+
+I'll use arbitrarily five folds for cross validation. Let's see how this performs.
+
+```{r cache=TRUE}
+## Set the seed for repeatability
+set.seed(687)
+
+## Fit a general boosting machine model with cross validation
+modFit.GBM.CV <-
+    train(classe~.,method="gbm",
+          data=training.noNA.noFac.noCor,
+          trControl=trainControl(method="cv", number=5, savePredictions = TRUE),
+          verbose=FALSE)
+
+## Predict classe and calculate the confusion matrix to assess accuracy
+predicts.CV <- predict(modFit.GBM.CV,training.noNA.noFac.noCor)
+confusionMatrix(predicts.CV,training.noNA.noFac.noCor$classe)
+```
+
+*-> Wow, that is some accuracy (0.9989)*
+
+# 3) Test the model
+
+## 2.1) Reading and cleaning
+
+```{r}
+## Read the testing data
+testing <- read.csv("pml-testing.csv")
+```
+
+## 2.2) Test/Predict the model
+
+```{r}
+## Predict the values for the test cases and show them
+predicts.test <- predict(modFit.GBM.CV,testing)
+predicts.test
+```
+
+*-> The predictions were all accurate in the quiz, so I guess the out of sample error is 0%?*
